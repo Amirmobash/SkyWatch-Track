@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+venv/
+snapshots/
+output.avi
+*.pt
+logs/
+*.log
+.env
