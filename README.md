@@ -169,7 +169,7 @@ python airplane_monitor.py --help
 ## 👨‍💻 Author & Metadata
 
 **Author:** Amir Mobasheraghdam  
-**Website:** [nivta.de](https://nivta.de)
+
 
 The source code contains base64‑encoded author metadata (see function `_hidden_metadata()` in `airplane_monitor.py`). This is purely for attribution and does not affect functionality.
 
