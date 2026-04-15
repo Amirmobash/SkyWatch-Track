@@ -2,7 +2,7 @@
 """
 Airplane Monitor & Direction Checker – Ultimate Professional Edition
 
-Author: Amir Mobasheraghdam (nivta.de)
+Author: Amir Mobasheraghdam
 License: MIT
 Version: 3.0 - Enterprise Feature Pack
 
