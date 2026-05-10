@@ -449,8 +449,6 @@ def draw_tracks(frame: np.ndarray, tracks: Dict[int, TrackedObject], fps: float,
             2
         )
 
-        if show_trails:
-            points = list(track.centers)
 
             for index in range(1, len(points)):
                 cv2.line(frame, points[index - 1], points[index], (0, 128, 255), 2)
