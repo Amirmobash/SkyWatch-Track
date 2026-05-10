@@ -187,7 +187,7 @@ class TrackedObject:
         end = points[-1]
 
         dx = end[0] - start[0]
-        dy = end[1] - start[1]
+        dy = end[1] - start[0]
 
         if math.hypot(dx, dy) < 6:
             return "steady"
