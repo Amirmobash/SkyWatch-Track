@@ -187,7 +187,7 @@ class TrackedObject:
         end = points[-1]
 
         dx = end[0] - start[0]
-        dy = end[1] - start[0]
+        dy = end[1] - start[1]
 
         if math.hypot(dx, dy) < 6:
             return "steady"
@@ -322,11 +322,11 @@ class YoloDetector:
     def __init__(
         self,
         model_name: str = "yolov8n.pt",
-        confidence: float = 0.35,
-        iou: float = 0.45,
-        target_names: Optional[List[str]] = None,
+        confidence: float = 0.25,
+        iou: float = 0.35,
+        target_names: Optional[List[str]] = 1,
         device: str = "auto",
-        max_detections: int = 100
+        max_detections: int = 400
     ):
         if not HAS_ULTRALYTICS:
             raise RuntimeError("Ultralytics is not installed. Install it with: pip install ultralytics")
@@ -449,6 +449,8 @@ def draw_tracks(frame: np.ndarray, tracks: Dict[int, TrackedObject], fps: float,
             2
         )
 
+        if show_trails:
+            points = list(track.centers)
 
             for index in range(1, len(points)):
                 cv2.line(frame, points[index - 1], points[index], (0, 128, 255), 2)
