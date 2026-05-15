@@ -10,27 +10,23 @@ import numpy as np
 
 try:
     import torch
-    has_torch = True
 except ImportError:
-    has_torch = False
+    torch = None
 
 try:
     from ultralytics import YOLO
-    has_yolo = True
 except ImportError:
-    has_yolo = False
+    YOLO = None
 
 try:
     from scipy.optimize import linear_sum_assignment
-    has_scipy = True
 except ImportError:
-    has_scipy = False
+    linear_sum_assignment = None
 
 try:
     from filterpy.kalman import KalmanFilter
-    has_filterpy = True
 except ImportError:
-    has_filterpy = False
+    KalmanFilter = None
 
 
 @dataclass
@@ -41,7 +37,7 @@ class Detection:
     bottom: int
     score: float
     class_id: int
-    name: str
+    label: str
 
     @property
     def box(self) -> Tuple[int, int, int, int]:
@@ -49,20 +45,18 @@ class Detection:
 
     @property
     def center(self) -> Tuple[int, int]:
-        x = (self.left + self.right) // 2
-        y = (self.top + self.bottom) // 2
-        return x, y
+        return (self.left + self.right) // 2, (self.top + self.bottom) // 2
 
 
 @dataclass
-class SpeedMeter:
+class PerformanceStats:
     frame_times: deque = field(default_factory=lambda: deque(maxlen=60))
     detection_times: deque = field(default_factory=lambda: deque(maxlen=60))
 
-    def add_frame(self, seconds: float) -> None:
+    def add_frame_time(self, seconds: float) -> None:
         self.frame_times.append(seconds)
 
-    def add_detection(self, seconds: float) -> None:
+    def add_detection_time(self, seconds: float) -> None:
         self.detection_times.append(seconds)
 
     @property
@@ -70,77 +64,73 @@ class SpeedMeter:
         if not self.frame_times:
             return 0.0
 
-        average = sum(self.frame_times) / len(self.frame_times)
-        if average <= 0:
-            return 0.0
-
-        return 1.0 / average
+        average_time = sum(self.frame_times) / len(self.frame_times)
+        return 1.0 / average_time if average_time > 0 else 0.0
 
     @property
     def detection_ms(self) -> float:
         if not self.detection_times:
             return 0.0
 
-        average = sum(self.detection_times) / len(self.detection_times)
-        return average * 1000.0
+        return sum(self.detection_times) / len(self.detection_times) * 1000.0
 
 
 class PlaneTrack:
-    def __init__(self, track_id: int, detection: Detection, use_kalman: bool = True):
+    def __init__(self, track_id: int, detection: Detection, smooth: bool = True):
         self.id = track_id
         self.box = detection.box
-        self.name = detection.name
+        self.label = detection.label
         self.score = detection.score
         self.points = deque(maxlen=80)
         self.points.append(detection.center)
-        self.missed = 0
+        self.missed_frames = 0
         self.created_at = time.time()
         self.updated_at = self.created_at
-        self.kalman = self.make_kalman(detection.center) if use_kalman and has_filterpy else None
+        self.kalman = self._build_kalman(detection.center) if smooth and KalmanFilter else None
 
-    def make_kalman(self, center: Tuple[int, int]) -> Any:
+    def _build_kalman(self, center: Tuple[int, int]) -> Any:
         x, y = center
 
-        kf = KalmanFilter(dim_x=4, dim_z=2)
+        kalman = KalmanFilter(dim_x=4, dim_z=2)
 
-        kf.F = np.array([
+        kalman.F = np.array([
             [1, 0, 1, 0],
             [0, 1, 0, 1],
             [0, 0, 1, 0],
             [0, 0, 0, 1]
         ], dtype=float)
 
-        kf.H = np.array([
+        kalman.H = np.array([
             [1, 0, 0, 0],
             [0, 1, 0, 0]
         ], dtype=float)
 
-        kf.x = np.array([[x], [y], [0], [0]], dtype=float)
-        kf.P *= 100.0
-        kf.R *= 8.0
-        kf.Q *= 0.05
+        kalman.x = np.array([[x], [y], [0], [0]], dtype=float)
+        kalman.P *= 100.0
+        kalman.R *= 8.0
+        kalman.Q *= 0.05
 
-        return kf
+        return kalman
 
     def update(self, detection: Detection) -> None:
         center = detection.center
 
-        if self.kalman is not None:
+        if self.kalman:
             self.kalman.predict()
             self.kalman.update(np.array([[center[0]], [center[1]]], dtype=float))
             center = int(self.kalman.x[0, 0]), int(self.kalman.x[1, 0])
 
         self.box = detection.box
-        self.name = detection.name
+        self.label = detection.label
         self.score = detection.score
         self.points.append(center)
-        self.missed = 0
+        self.missed_frames = 0
         self.updated_at = time.time()
 
     def mark_missing(self) -> None:
-        self.missed += 1
+        self.missed_frames += 1
 
-        if self.kalman is not None:
+        if self.kalman:
             self.kalman.predict()
             center = int(self.kalman.x[0, 0]), int(self.kalman.x[1, 0])
             self.points.append(center)
@@ -152,24 +142,22 @@ class PlaneTrack:
         if len(self.points) < 2:
             return 0.0
 
-        recent_points = list(self.points)[-10:]
-        total_distance = 0.0
+        recent = list(self.points)[-10:]
+        distance = 0.0
 
-        for i in range(1, len(recent_points)):
-            x1, y1 = recent_points[i - 1]
-            x2, y2 = recent_points[i]
-            total_distance += math.hypot(x2 - x1, y2 - y1)
+        for previous, current in zip(recent, recent[1:]):
+            distance += math.hypot(current[0] - previous[0], current[1] - previous[1])
 
-        steps = max(1, len(recent_points) - 1)
-        return total_distance / steps * fps
+        steps = max(1, len(recent) - 1)
+        return distance / steps * fps
 
     def direction(self) -> str:
         if len(self.points) < 2:
             return "steady"
 
-        recent_points = list(self.points)[-12:]
-        start_x, start_y = recent_points[0]
-        end_x, end_y = recent_points[-1]
+        recent = list(self.points)[-12:]
+        start_x, start_y = recent[0]
+        end_x, end_y = recent[-1]
 
         dx = end_x - start_x
         dy = end_y - start_y
@@ -177,33 +165,33 @@ class PlaneTrack:
         if math.hypot(dx, dy) < 6:
             return "steady"
 
-        words = []
+        parts = []
 
         if abs(dy) > 4:
-            words.append("down" if dy > 0 else "up")
+            parts.append("down" if dy > 0 else "up")
 
         if abs(dx) > 4:
-            words.append("right" if dx > 0 else "left")
+            parts.append("right" if dx > 0 else "left")
 
-        return "-".join(words) if words else "steady"
+        return "-".join(parts) if parts else "steady"
 
 
 class PlaneTracker:
-    def __init__(self, max_missing: int = 30, max_distance: float = 120.0, use_kalman: bool = True):
+    def __init__(self, max_missing: int = 30, max_distance: float = 120.0, smooth: bool = True):
         self.max_missing = max_missing
         self.max_distance = max_distance
-        self.use_kalman = use_kalman
+        self.smooth = smooth
         self.next_id = 1
         self.tracks: Dict[int, PlaneTrack] = {}
 
     def update(self, detections: List[Detection]) -> Dict[int, PlaneTrack]:
         if not detections:
-            self.mark_all_missing()
+            self._mark_all_missing()
             return self.tracks
 
         if not self.tracks:
             for detection in detections:
-                self.add_track(detection)
+                self._add_track(detection)
 
             return self.tracks
 
@@ -211,16 +199,14 @@ class PlaneTracker:
         track_centers = np.array([self.tracks[track_id].center() for track_id in track_ids], dtype=float)
         detection_centers = np.array([detection.center for detection in detections], dtype=float)
 
-        distances = self.get_distances(track_centers, detection_centers)
-        matches = self.match_items(distances)
+        distances = self._distance_matrix(track_centers, detection_centers)
+        matches = self._match(distances)
 
         used_tracks = set()
         used_detections = set()
 
         for track_index, detection_index in matches:
-            distance = distances[track_index, detection_index]
-
-            if distance > self.max_distance:
+            if distances[track_index, detection_index] > self.max_distance:
                 continue
 
             track_id = track_ids[track_index]
@@ -235,42 +221,37 @@ class PlaneTracker:
 
         for index, detection in enumerate(detections):
             if index not in used_detections:
-                self.add_track(detection)
+                self._add_track(detection)
 
-        self.remove_old_tracks()
+        self._remove_lost_tracks()
         return self.tracks
 
-    def add_track(self, detection: Detection) -> None:
-        self.tracks[self.next_id] = PlaneTrack(
-            track_id=self.next_id,
-            detection=detection,
-            use_kalman=self.use_kalman
-        )
-
+    def _add_track(self, detection: Detection) -> None:
+        self.tracks[self.next_id] = PlaneTrack(self.next_id, detection, self.smooth)
         self.next_id += 1
 
-    def mark_all_missing(self) -> None:
+    def _mark_all_missing(self) -> None:
         for track in self.tracks.values():
             track.mark_missing()
 
-        self.remove_old_tracks()
+        self._remove_lost_tracks()
 
-    def remove_old_tracks(self) -> None:
-        old_ids = []
+    def _remove_lost_tracks(self) -> None:
+        lost_ids = [
+            track_id
+            for track_id, track in self.tracks.items()
+            if track.missed_frames > self.max_missing
+        ]
 
-        for track_id, track in self.tracks.items():
-            if track.missed > self.max_missing:
-                old_ids.append(track_id)
-
-        for track_id in old_ids:
+        for track_id in lost_ids:
             del self.tracks[track_id]
 
-    def get_distances(self, tracks: np.ndarray, detections: np.ndarray) -> np.ndarray:
-        difference = tracks[:, None, :] - detections[None, :, :]
-        return np.sqrt(np.sum(difference * difference, axis=2))
+    def _distance_matrix(self, tracks: np.ndarray, detections: np.ndarray) -> np.ndarray:
+        diff = tracks[:, None, :] - detections[None, :, :]
+        return np.sqrt(np.sum(diff * diff, axis=2))
 
-    def match_items(self, distances: np.ndarray) -> List[Tuple[int, int]]:
-        if has_scipy:
+    def _match(self, distances: np.ndarray) -> List[Tuple[int, int]]:
+        if linear_sum_assignment:
             rows, columns = linear_sum_assignment(distances)
             return list(zip(rows, columns))
 
@@ -307,26 +288,26 @@ class PlaneDetector:
         device: str = "auto",
         max_detections: int = 100
     ):
-        if not has_yolo:
+        if YOLO is None:
             raise RuntimeError("Ultralytics is not installed. Run: pip install ultralytics")
 
         self.model_name = model_name
         self.confidence = confidence
         self.iou = iou
-        self.targets = [name.lower() for name in (targets or ["airplane"])]
-        self.device = self.choose_device(device)
+        self.targets = [target.lower() for target in (targets or ["airplane"])]
+        self.device = self._pick_device(device)
         self.max_detections = max_detections
         self.model = YOLO(model_name)
         self.names = getattr(self.model, "names", {})
 
-    def choose_device(self, device: str) -> str:
+    def _pick_device(self, device: str) -> str:
         if device != "auto":
             return device
 
-        if has_torch and torch.cuda.is_available():
+        if torch and torch.cuda.is_available():
             return "cuda"
 
-        if has_torch and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        if torch and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             return "mps"
 
         return "cpu"
@@ -350,9 +331,9 @@ class PlaneDetector:
         for box in result.boxes:
             class_id = int(box.cls.detach().cpu().numpy()[0])
             score = float(box.conf.detach().cpu().numpy()[0])
-            name = str(self.names.get(class_id, class_id)).lower()
+            label = str(self.names.get(class_id, class_id)).lower()
 
-            if not self.is_target(name):
+            if not self._is_target(label):
                 continue
 
             left, top, right, bottom = box.xyxy[0].detach().cpu().numpy()
@@ -365,23 +346,19 @@ class PlaneDetector:
                     bottom=int(bottom),
                     score=score,
                     class_id=class_id,
-                    name=name
+                    label=label
                 )
             )
 
         return detections
 
-    def is_target(self, name: str) -> bool:
-        return any(target in name for target in self.targets)
+    def _is_target(self, label: str) -> bool:
+        return any(target in label for target in self.targets)
 
 
 def read_source(value: str) -> Union[int, str]:
     value = value.strip()
-
-    if value.isdigit():
-        return int(value)
-
-    return value
+    return int(value) if value.isdigit() else value
 
 
 def draw_detections(frame: np.ndarray, detections: List[Detection]) -> None:
@@ -394,7 +371,7 @@ def draw_detections(frame: np.ndarray, detections: List[Detection]) -> None:
             2
         )
 
-        text = f"{detection.name} {detection.score:.2f}"
+        text = f"{detection.label} {detection.score:.2f}"
 
         cv2.putText(
             frame,
@@ -409,7 +386,7 @@ def draw_detections(frame: np.ndarray, detections: List[Detection]) -> None:
 
 def draw_tracks(frame: np.ndarray, tracks: Dict[int, PlaneTrack], fps: float, show_trails: bool) -> None:
     for track_id, track in tracks.items():
-        if track.missed > 3:
+        if track.missed_frames > 3:
             continue
 
         x, y = track.center()
@@ -433,16 +410,16 @@ def draw_tracks(frame: np.ndarray, tracks: Dict[int, PlaneTrack], fps: float, sh
         if show_trails:
             points = list(track.points)
 
-            for i in range(1, len(points)):
-                cv2.line(frame, points[i - 1], points[i], (0, 128, 255), 2)
+            for previous, current in zip(points, points[1:]):
+                cv2.line(frame, previous, current, (0, 128, 255), 2)
 
 
-def draw_info(frame: np.ndarray, speed_meter: SpeedMeter, detection_count: int, track_count: int) -> None:
+def draw_status(frame: np.ndarray, stats: PerformanceStats, detections: int, tracks: int) -> None:
     text = (
-        f"FPS: {speed_meter.fps:.1f} | "
-        f"Detection: {speed_meter.detection_ms:.1f} ms | "
-        f"Planes: {detection_count} | "
-        f"Tracks: {track_count}"
+        f"FPS: {stats.fps:.1f} | "
+        f"Detection: {stats.detection_ms:.1f} ms | "
+        f"Planes: {detections} | "
+        f"Tracks: {tracks}"
     )
 
     cv2.rectangle(frame, (10, 10), (760, 44), (0, 0, 0), -1)
@@ -458,7 +435,7 @@ def draw_info(frame: np.ndarray, speed_meter: SpeedMeter, detection_count: int, 
     )
 
 
-def make_video_writer(path: str, video: cv2.VideoCapture) -> cv2.VideoWriter:
+def make_writer(path: str, video: cv2.VideoCapture) -> cv2.VideoWriter:
     fps = video.get(cv2.CAP_PROP_FPS)
 
     if not fps or fps <= 1:
@@ -476,7 +453,7 @@ def run(args: argparse.Namespace) -> None:
     video = cv2.VideoCapture(source)
 
     if not video.isOpened():
-        raise RuntimeError(f"Could not open this source: {args.source}")
+        raise RuntimeError(f"Could not open source: {args.source}")
 
     detector = PlaneDetector(
         model_name=args.model,
@@ -490,11 +467,11 @@ def run(args: argparse.Namespace) -> None:
     tracker = PlaneTracker(
         max_missing=args.max_missing,
         max_distance=args.max_distance,
-        use_kalman=not args.no_kalman
+        smooth=not args.no_kalman
     )
 
-    speed_meter = SpeedMeter()
-    writer = make_video_writer(args.output, video) if args.output else None
+    stats = PerformanceStats()
+    writer = make_writer(args.output, video) if args.output else None
 
     try:
         while True:
@@ -507,17 +484,16 @@ def run(args: argparse.Namespace) -> None:
 
             detection_start = time.perf_counter()
             detections = detector.detect(frame)
-            speed_meter.add_detection(time.perf_counter() - detection_start)
+            stats.add_detection_time(time.perf_counter() - detection_start)
 
             tracks = tracker.update(detections)
-
             output = frame.copy()
 
             draw_detections(output, detections)
-            draw_tracks(output, tracks, speed_meter.fps or 30.0, args.trails)
-            draw_info(output, speed_meter, len(detections), len(tracks))
+            draw_tracks(output, tracks, stats.fps or 30.0, args.trails)
+            draw_status(output, stats, len(detections), len(tracks))
 
-            if writer is not None:
+            if writer:
                 writer.write(output)
 
             if args.display:
@@ -526,12 +502,12 @@ def run(args: argparse.Namespace) -> None:
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
-            speed_meter.add_frame(time.perf_counter() - frame_start)
+            stats.add_frame_time(time.perf_counter() - frame_start)
 
     finally:
         video.release()
 
-        if writer is not None:
+        if writer:
             writer.release()
 
         if args.display:
@@ -541,21 +517,21 @@ def run(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="plane_monitor",
-        description="Detect planes, follow them, and show their movement."
+        description="Detect and track planes in video."
     )
 
-    parser.add_argument("--source", default="0", help="Camera number, video file, or stream link")
-    parser.add_argument("--output", help="Save the result as a video file")
+    parser.add_argument("--source", default="0", help="Camera number, video file, or stream URL")
+    parser.add_argument("--output", help="Save the processed video")
     parser.add_argument("--model", default="yolov8n.pt", help="YOLO model name or path")
-    parser.add_argument("--confidence", type=float, default=0.35, help="Minimum detection score")
-    parser.add_argument("--iou", type=float, default=0.45, help="YOLO IoU value")
-    parser.add_argument("--target", nargs="+", default=["airplane"], help="Objects to detect")
+    parser.add_argument("--confidence", type=float, default=0.35, help="Minimum detection confidence")
+    parser.add_argument("--iou", type=float, default=0.45, help="YOLO IoU threshold")
+    parser.add_argument("--target", nargs="+", default=["airplane"], help="Object names to detect")
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or mps")
     parser.add_argument("--display", action="store_true", help="Show the video window")
-    parser.add_argument("--trails", action="store_true", help="Show movement lines")
-    parser.add_argument("--no-kalman", action="store_true", help="Turn off smooth tracking")
-    parser.add_argument("--max-missing", type=int, default=30, help="Frames to keep a missing plane")
-    parser.add_argument("--max-distance", type=float, default=120.0, help="Maximum distance for matching")
+    parser.add_argument("--trails", action="store_true", help="Show movement trails")
+    parser.add_argument("--no-kalman", action="store_true", help="Disable smooth tracking")
+    parser.add_argument("--max-missing", type=int, default=30, help="Frames to keep missing tracks")
+    parser.add_argument("--max-distance", type=float, default=120.0, help="Maximum matching distance")
     parser.add_argument("--max-detections", type=int, default=100, help="Maximum detections per frame")
 
     return parser
@@ -568,7 +544,7 @@ def main() -> None:
     try:
         run(args)
     except KeyboardInterrupt:
-        print("Stopped by user")
+        print("Stopped by user.")
     except Exception as error:
         print(f"Error: {error}")
 
