@@ -1,3 +1,25 @@
+"""
+plane_monitor.py
+
+A readable, beginner-friendly plane detection and tracking script.
+
+What it does:
+1. Opens a camera, video file, or stream URL.
+2. Uses YOLO to detect airplanes in each frame.
+3. Tracks each detected plane across frames.
+4. Optionally smooths movement with a Kalman filter.
+5. Draws bounding boxes, track IDs, direction, speed, FPS, and detection time.
+6. Can display the result live or save it as a processed video.
+
+Install the main dependencies:
+    pip install opencv-python numpy ultralytics scipy filterpy
+
+Example usage:
+    python plane_monitor_humanized.py --source video.mp4 --display --trails
+    python plane_monitor_humanized.py --source 0 --display
+    python plane_monitor_humanized.py --source video.mp4 --output result.mp4
+"""
+
 import argparse
 import math
 import time
@@ -8,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import cv2
 import numpy as np
 
+# Optional GPU support. If PyTorch is missing, the script still runs on CPU.
 try:
     import torch
 except ImportError:
@@ -31,6 +54,7 @@ except ImportError:
 
 @dataclass
 class Detection:
+    """One YOLO detection converted into a simple, easy-to-use object."""
     left: int
     top: int
     right: int
@@ -50,6 +74,7 @@ class Detection:
 
 @dataclass
 class PerformanceStats:
+    """Keeps a short moving average of FPS and detection speed."""
     frame_times: deque = field(default_factory=lambda: deque(maxlen=60))
     detection_times: deque = field(default_factory=lambda: deque(maxlen=60))
 
@@ -76,6 +101,7 @@ class PerformanceStats:
 
 
 class PlaneTrack:
+    """Represents one tracked airplane across multiple video frames."""
     def __init__(self, track_id: int, detection: Detection, smooth: bool = True):
         self.id = track_id
         self.box = detection.box
@@ -177,6 +203,7 @@ class PlaneTrack:
 
 
 class PlaneTracker:
+    """Matches new detections to existing tracks and removes old lost tracks."""
     def __init__(self, max_missing: int = 30, max_distance: float = 120.0, smooth: bool = True):
         self.max_missing = max_missing
         self.max_distance = max_distance
@@ -279,6 +306,7 @@ class PlaneTracker:
 
 
 class PlaneDetector:
+    """Small wrapper around the Ultralytics YOLO model."""
     def __init__(
         self,
         model_name: str = "yolov8n.pt",
@@ -449,6 +477,7 @@ def make_writer(path: str, video: cv2.VideoCapture) -> cv2.VideoWriter:
 
 
 def run(args: argparse.Namespace) -> None:
+    """Main processing loop: read frame, detect planes, track them, draw results."""
     source = read_source(args.source)
     video = cv2.VideoCapture(source)
 
@@ -515,6 +544,7 @@ def run(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Create all command-line options in one place."""
     parser = argparse.ArgumentParser(
         prog="plane_monitor",
         description="Detect and track planes in video."
