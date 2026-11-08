@@ -1,5 +1,11 @@
 # SkyWatch-Track
 
+
+<!-- featured-project-image -->
+<p align="center"><img src="amir%2C%202025%2C%2007_22_34%20PM.png" alt="SkyWatch Track aircraft detection computer vision program screenshot" width="960"/></p>
+<p align="center"><sub>Amir Mobasheraghdam</sub></p>
+
+
 **A real‑time airplane monitoring system**  
 Detect, track, and alert on aircraft heading anomalies using your webcam or video files.  
 Built with YOLO + optical flow – ideal for runway monitoring, drone detection, or general aviation observation.
